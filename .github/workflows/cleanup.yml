@@ -1,0 +1,59 @@
+name: Shutdown mecaDB Staging
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  shutdown:
+    runs-on: ubuntu-latest
+    environment: raspberry-staging
+
+    steps:
+      - name: Install cloudflared
+        run: |
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin
+
+      - name: Setup SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.RASPBERRY_SSH_KEY }}
+          HOST: ${{ secrets.RASPBERRY_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          cat <<EOF > ~/.ssh/config
+          Host $HOST
+              ProxyCommand /usr/local/bin/cloudflared access ssh --hostname %h
+              StrictHostKeyChecking no
+          EOF
+
+      - name: Shutdown staging
+        env:
+          USER: ${{ secrets.RASPBERRY_USER }}
+          HOST: ${{ secrets.RASPBERRY_HOST }}
+          APP_DIR: ${{ vars.MECADB_APP_DIR }}
+        run: |
+          ssh -i ~/.ssh/id_rsa "$USER@$HOST" << 'REMOTEEOC'
+            if [ ! -d ${{ env.APP_DIR }} ]; then
+              echo "⏭️ Staging already shut down, nothing to do."
+              exit 0
+            fi
+
+            cd ${{ env.APP_DIR }}
+
+            if [ -f docker-compose.yml ]; then
+              echo "🛑 Stopping containers..."
+              docker compose down -v && echo "✅ Containers stopped." || echo "⚠️ Failed to stop containers."
+            else
+              echo "⚠️ No docker-compose.yml found, skipping container shutdown."
+            fi
+
+            echo "🗑️ Removing staging directory..."
+            rm -rf ${{ env.APP_DIR }} && echo "✅ Staging directory removed." || echo "⚠️ Failed to remove directory."
+
+            echo "✅ Staging shutdown complete."
+          REMOTEEOC
